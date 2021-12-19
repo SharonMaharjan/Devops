@@ -1,0 +1,185 @@
+using DevopsAssignment.Models.Account;
+using DevopsAssignment.Services;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace DevopsAssignment.css{
+    public class Handler : HttpClientHandler
+    {
+        private storage localStorageService;
+        public Handler(storage localStorageService)
+        {
+            localStorageService = localStorageService;
+        }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var datapath = request.RequestUri.AbsolutePath;
+            var method = request.Method;
+            var users = await localStorageService.GetItem<List<UserRecord>>(keyOfUser) ?? new List<UserRecord>();
+            var keyOfUser ="registration of users";
+            return await handleRoute();
+
+
+            async Task<HttpResponseMessage> handleRoute()
+            {
+                if (datapath == "/users/authenticate" && method == HttpMethod.Post)
+                    return await authenticate();
+                if (datapath == "/users/register" && method == HttpMethod.Post)
+                    return await register();
+                    if (datapath == "/users" && method == HttpMethod.Get)
+                    return await getUsers();
+                if (Regex.Match(datapath, @"\/users\/\d+$").Success && method == HttpMethod.Get)
+                    return await getUserById();
+                if (Regex.Match(datapath, @"\/users\/\d+$").Success && method == HttpMethod.Put)
+                    return await updateUser();
+                if (Regex.Match(datapath, @"\/users\/\d+$").Success && method == HttpMethod.Delete)
+                    return await deleteUser();
+            }
+            return await base.SendAsync(request,cancellationToken);
+
+            async Task<HttpResponseMessage> register()
+            {
+                var json = await request.Content.ReadAsStringAsync();
+                var part = JsonSerializer.Deserialize<AddUser>(json);
+                if (users.Any(x => x.Username == part.Username))
+                    return await error($"Username '{part.Username}' has been  already register");
+                var person = new UserRecord {
+                    Id = users.Count > 0 ? users.Max(x => x.Id) + 1 : 1,
+                    Username = part.Username,
+                    Password = part.Password,
+                    FirstName = part.FirstName,
+                    LastName = part.LastName
+                };
+                users.Add(person);
+
+                await localStorageService.SetItem(keyOfUser, users);
+                
+                return await isFine();
+            }
+            async Task<HttpResponseMessage> getUsers()
+            {
+                if (!isLoggedIn()) return await unauthorized();
+                return await isFine(users.Select(x => basicDetails(x)));
+            }
+            async Task<HttpResponseMessage> getUserById()
+            {
+                if (!isLoggedIn()) return await unauthorized();
+
+                var person = users.FirstOrDefault(x => x.Id == idFromPath());
+                return await isFine(basicDetails(person));
+            }
+
+            async Task<HttpResponseMessage> updateUser() 
+            {
+                if (!isLoggedIn()) return await unauthorized();
+
+                var json = await request.Content.ReadAsStringAsync();
+                var part = JsonSerializer.Deserialize<EditUser>(json);
+                var person = users.FirstOrDefault(x => x.Id == idFromPath());
+
+                // if username changed check it isn't already taken
+                if (person.Username != part.Username && users.Any(x => x.Username == part.Username))
+                    return await error($"Username '{part.Username}' has already registered");
+
+                // only update password if entered
+                if (!string.IsNullOrWhiteSpace(part.Password))
+                    person.Password = person.Password;
+
+                // update and save user
+                person.Username = part.Username;
+                person.FirstName = part.FirstName;
+                person.LastName = part.LastName;
+                await localStorageService.SetItem(keyOfUser, users);
+
+                return await isFine();
+            }
+            async Task<HttpResponseMessage> deleteUser()
+            {
+                if (!isLoggedIn()) return await unauthorized();
+
+                users.RemoveAll(x => x.Id == idFromPath());
+                await localStorageService.SetItem(keyOfUser, users);
+
+                return await isFine();
+            }
+
+             async Task<HttpResponseMessage> isFine(object part = null)
+            {
+                return await jsonResponse(HttpStatusCode.OK, part ?? new {});
+            }
+            async Task<HttpResponseMessage> error(string message)
+            {
+                return await jsonResponse(HttpStatusCode.BadRequest, new { message });
+            }
+             async Task<HttpResponseMessage> unauthorized()
+            {
+                return await jsonResponse(HttpStatusCode.Unauthorized, new { message = "Unauthorized" });
+            }
+            async Task<HttpResponseMessage> jsonResponse(HttpStatusCode statusCode, object content)
+            {
+                var response = new HttpResponseMessage
+                {
+                    StatusCode = statusCode,
+                    Content = new StringContent(JsonSerializer.Serialize(content), Encoding.UTF8, "application/json")
+                };
+                
+                // delay to simulate real api call
+                await Task.Delay(500);
+
+                return response;
+            }
+
+            bool isLoggedIn()
+            {
+                return request.Headers.Authorization?.Parameter == "token number";
+            } 
+             int idFromPath()
+            {
+                return int.Parse(datapath.Split('/').Last());
+            }
+
+
+            async Task<HttpResponseMessage> authenticate()
+            {
+                var parts = JsonSerializer.Deserialize<Login>(json);
+                var json = await request.Content.ReadAsStringAsync();
+                var person = users.FirstOrDefault(x => x.Username ==parts.Username && x.Password == parts.Password);
+                 if (person == null)
+                    return await error("Username or password is incorrect");
+
+                return await isFine(new {
+                    Id = person.Id.ToString(),
+                    Username = person.Username,
+                    FirstName = person.FirstName,
+                    LastName = person.LastName,
+                    Token = "token number"
+                });
+            }
+            dynamic basicDetails(UserRecord person)
+            {
+                return new {
+                    Id = person.Id.ToString(),
+                    Username = person.Username,
+                    FirstName = person.FirstName,
+                    LastName = person.LastName
+                };
+            }
+        }
+    }
+
+    public class UserRecord
+    {
+        public int Id { get; set; }
+        public string FirstName { get; set; }
+        public string LastName { get; set; }
+        public string Username { get; set; }
+        public string Password { get; set; }
+    }
+}
